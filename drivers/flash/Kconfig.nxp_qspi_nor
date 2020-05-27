@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig NXP_QSPI_NOR
+		bool "NXP QSPI NOR Flash"
+		select FLASH_HAS_DRIVER_ENABLED
+		select USE_QSPI
+		select FLASH_HAS_PAGE_LAYOUT
+		help
+				Enable support for NXP QSPI NOR Flash driver using FlexSPI.
