@@ -208,6 +208,18 @@ static ALWAYS_INLINE void clock_init(void)
 	CLOCK_SetMux(kCLOCK_CsiMux, 0); /* Set CSI source to OSC 24M */
 #endif
 
+#ifdef CONFIG_HAS_MCUX_FLEXSPI
+    /* Disable Flexspi clock gate. */
+    CLOCK_DisableClock(kCLOCK_FlexSpi);
+    const clock_usb_pll_config_t config = {.loopDivider = 0};
+    CLOCK_InitUsb1Pll(&config);
+    CLOCK_InitUsb1Pfd(kCLOCK_Pfd0, 24);
+    /* Set FLEXSPI_PODF. */
+    CLOCK_SetDiv(kCLOCK_FlexspiDiv, 3);
+    /* Set Flexspi clock source. */
+    CLOCK_SetMux(kCLOCK_FlexspiMux, 2);
+#endif
+
 	/* Keep the system clock running so SYSTICK can wake up the system from
 	 * wfi.
 	 */
