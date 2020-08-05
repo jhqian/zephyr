@@ -209,6 +209,7 @@ static ALWAYS_INLINE void clock_init(void)
 #endif
 
 #ifdef CONFIG_HAS_MCUX_FLEXSPI
+#ifndef CONFIG_CODE_FLEXSPI
     /* Disable Flexspi clock gate. */
     CLOCK_DisableClock(kCLOCK_FlexSpi);
     const clock_usb_pll_config_t config = {.loopDivider = 0};
@@ -218,6 +219,7 @@ static ALWAYS_INLINE void clock_init(void)
     CLOCK_SetDiv(kCLOCK_FlexspiDiv, 3);
     /* Set Flexspi clock source. */
     CLOCK_SetMux(kCLOCK_FlexspiMux, 2);
+#endif
 #endif
 
 	/* Keep the system clock running so SYSTICK can wake up the system from
