@@ -94,7 +94,7 @@ const uint32_t customLUT[CUSTOM_LUT_LENGTH] = {
 
 	/* Read extend parameters */
 	[4 * NOR_CMD_LUT_SEQ_IDX_READSTATUS] =
-		FLEXSPI_LUT_SEQ(kFLEXSPI_Command_SDR, kFLEXSPI_1PAD, 0x05, kFLEXSPI_Command_READ_SDR, kFLEXSPI_1PAD, 0x04),
+		FLEXSPI_LUT_SEQ(kFLEXSPI_Command_SDR, kFLEXSPI_1PAD, 0x81, kFLEXSPI_Command_READ_SDR, kFLEXSPI_1PAD, 0x04),
 
 	/* Write Enable */
 	[4 * NOR_CMD_LUT_SEQ_IDX_WRITEENABLE] =
@@ -132,12 +132,16 @@ const uint32_t customLUT[CUSTOM_LUT_LENGTH] = {
 	[4 * NOR_CMD_LUT_SEQ_IDX_EXITQPI] =
 		FLEXSPI_LUT_SEQ(kFLEXSPI_Command_SDR, kFLEXSPI_4PAD, 0xF5, kFLEXSPI_Command_STOP, kFLEXSPI_1PAD, 0),
 
+	/* Read status register */
+	[4 * NOR_CMD_LUT_SEQ_IDX_READSTATUSREG] =
+		FLEXSPI_LUT_SEQ(kFLEXSPI_Command_SDR, kFLEXSPI_1PAD, 0x05, kFLEXSPI_Command_READ_SDR, kFLEXSPI_1PAD, 0x04),
+
 	/* Erase whole chip */
 	[4 * NOR_CMD_LUT_SEQ_IDX_ERASECHIP] =
 		FLEXSPI_LUT_SEQ(kFLEXSPI_Command_SDR, kFLEXSPI_1PAD, 0xC7, kFLEXSPI_Command_STOP, kFLEXSPI_1PAD, 0),
 };
 
-static status_t flash_mcux_flexspi_qspi_wait_bus_busy(struct device *dev, off_t offset)
+static status_t flash_mcux_flexspi_qspi_wait_bus_busy(struct device *dev)
 {
 	bool is_busy = true;
 	uint32_t read_value;
@@ -147,7 +151,7 @@ static status_t flash_mcux_flexspi_qspi_wait_bus_busy(struct device *dev, off_t 
 	struct flash_priv *priv = dev->driver_data;
 	FLEXSPI_Type *base_address = priv->pflash_block_base;
 
-	flash_transfer.deviceAddress = offset;
+	flash_transfer.deviceAddress = 0;
 	flash_transfer.port = kFLEXSPI_PortA1;
 	flash_transfer.cmdType = kFLEXSPI_Read;
 	flash_transfer.SeqNumber = 1;
@@ -213,7 +217,7 @@ static int flash_mcux_flexspi_qspi_read(struct device *dev, off_t offset,
 
 	status = FLEXSPI_TransferBlocking(base_address, &flash_transfer);
 	if (status == kStatus_Success) {
-		status = flash_mcux_flexspi_qspi_wait_bus_busy(dev, offset);
+		status = flash_mcux_flexspi_qspi_wait_bus_busy(dev);
 	}
 
 	irq_unlock(key);
@@ -221,16 +225,13 @@ static int flash_mcux_flexspi_qspi_read(struct device *dev, off_t offset,
 	return status;
 }
 
-#define FLASH_WRITE_SIZE 256
-
 static int flash_mcux_flexspi_qspi_write(struct device *dev, off_t offset,
 					 const void *data, size_t len)
 {
 	status_t status = kStatus_Fail;
 	flexspi_transfer_t flash_transfer;
 	unsigned int key;
-
-	static uint8_t ram_buffer[FLASH_WRITE_SIZE];
+	uint32_t page_size = DT_PROP(SOC_NV_FLASH_NODE, write_block_size);
 
 	struct flash_priv *priv = dev->driver_data;
 	FLEXSPI_Type *base_address = priv->pflash_block_base;
@@ -241,35 +242,59 @@ static int flash_mcux_flexspi_qspi_write(struct device *dev, off_t offset,
 
 	key = irq_lock();
 
-	int sectors = len / FLASH_WRITE_SIZE;
-
-	if (len % FLASH_WRITE_SIZE) {
-		sectors++;
-	}
-
-	for (int i = 0; i < sectors; i++) {
-		off_t offset_to_sector = offset + i * FLASH_WRITE_SIZE;
-		uint32_t *offset_to_data = (uint32_t *)((uint8_t *)data + i * FLASH_WRITE_SIZE);
-		uint32_t bytes_to_write = len - i * FLASH_WRITE_SIZE >= FLASH_WRITE_SIZE ? FLASH_WRITE_SIZE : len - i *
-					  FLASH_WRITE_SIZE;
-
-		memcpy(ram_buffer, offset_to_data, bytes_to_write);
-
-		status = flash_mcux_flexspi_qspi_write_enable(dev, offset);
-		if (status == kStatus_Success) {
-			flash_transfer.deviceAddress = offset_to_sector;
-			flash_transfer.port = kFLEXSPI_PortA1;
-			flash_transfer.cmdType = kFLEXSPI_Write;
-			flash_transfer.SeqNumber = 1;
-			flash_transfer.seqIndex = NOR_CMD_LUT_SEQ_IDX_PAGEPROGRAM_QUAD;
-			flash_transfer.data = (uint32_t *)&ram_buffer[0];
-			flash_transfer.dataSize = bytes_to_write;
-
-			status = FLEXSPI_TransferBlocking(base_address, &flash_transfer);
-			if (status == kStatus_Success) {
-				status = flash_mcux_flexspi_qspi_wait_bus_busy(dev, offset);
+	uint32_t bytes_to_write = 0;
+	size_t left = len;
+	uint32_t *p = (uint32_t *)data;
+	off_t d = offset;
+	while (left != 0) {
+		if (left > page_size)
+		{
+			if ((uint32_t) d % page_size)
+			{
+				bytes_to_write = page_size - ((uint32_t) d % page_size);
+			}
+			else
+			{
+				bytes_to_write = page_size;
 			}
 		}
+		else
+		{
+			if ((uint32_t) (d % page_size) + left <= page_size)
+			{
+				bytes_to_write = left;
+			}
+			else
+			{
+				bytes_to_write = page_size - (uint32_t) (d % page_size);
+			}
+		}
+
+		status = flash_mcux_flexspi_qspi_write_enable(dev, d);
+		if (status != kStatus_Success) {
+			break;
+		}
+
+		flash_transfer.deviceAddress = d;
+		flash_transfer.port = kFLEXSPI_PortA1;
+		flash_transfer.cmdType = kFLEXSPI_Write;
+		flash_transfer.SeqNumber = 1;
+		flash_transfer.seqIndex = NOR_CMD_LUT_SEQ_IDX_PAGEPROGRAM_QUAD;
+		flash_transfer.data = p;
+		flash_transfer.dataSize = bytes_to_write;
+
+		status = FLEXSPI_TransferBlocking(base_address, &flash_transfer);
+		if (status != kStatus_Success) {
+			break;
+		}
+		status = flash_mcux_flexspi_qspi_wait_bus_busy(dev);
+		if (status != kStatus_Success) {
+			break;
+		}
+		FLEXSPI_SoftwareReset(base_address);
+		p += bytes_to_write;
+		d += bytes_to_write;
+		left -= bytes_to_write;
 	}
 
 	irq_unlock(key);
@@ -301,7 +326,7 @@ static int flash_mcux_flexspi_qspi_erase(struct device *dev, off_t offset, size_
 
 	for (int i = 0; i < sectors; i++) {
 		off_t offset_to_sector = offset + i * DT_PROP(SOC_NV_FLASH_NODE, erase_block_size);
-		status = flash_mcux_flexspi_qspi_write_enable(dev, offset);
+		status = flash_mcux_flexspi_qspi_write_enable(dev, offset_to_sector);
 		if (status == kStatus_Success) {
 			flash_transfer.deviceAddress = offset_to_sector;
 			flash_transfer.port = kFLEXSPI_PortA1;
@@ -311,7 +336,8 @@ static int flash_mcux_flexspi_qspi_erase(struct device *dev, off_t offset, size_
 
 			status = FLEXSPI_TransferBlocking(base_address, &flash_transfer);
 			if (status == kStatus_Success) {
-				status = flash_mcux_flexspi_qspi_wait_bus_busy(dev, offset);
+				status = flash_mcux_flexspi_qspi_wait_bus_busy(dev);
+				FLEXSPI_SoftwareReset(base_address);
 			}
 		}
 	}
@@ -342,7 +368,7 @@ static int flash_mcux_flexspi_qspi_write_protection(struct device *dev, bool ena
 #if defined(CONFIG_FLASH_PAGE_LAYOUT)
 static const struct flash_pages_layout dev_layout = {
 	.pages_count = KB(CONFIG_FLASH_SIZE) /
-		       DT_PROP(SOC_NV_FLASH_NODE, erase_block_size),
+				DT_PROP(SOC_NV_FLASH_NODE, erase_block_size),
 	.pages_size = DT_PROP(SOC_NV_FLASH_NODE, erase_block_size),
 };
 
@@ -379,11 +405,6 @@ static int flash_mcux_flexspi_qspi_init(struct device *dev)
 
 	key = irq_lock();
 
-	/* Switch to PLL2 for XIP to avoid hardfault during re-initialize clock. */
-	CLOCK_InitSysPfd(kCLOCK_Pfd2, 24);      /* Set PLL2 PFD2 clock 396MHZ. */
-	CLOCK_SetMux(kCLOCK_FlexspiMux, 0x2);   /* Choose PLL2 PFD2 clock as flexspi source clock. */
-	CLOCK_SetDiv(kCLOCK_FlexspiDiv, 2);     /* flexspi clock 133M. */
-
 	flexspi_config_t config;
 
 	/*Get FLEXSPI default settings and configure the flexspi. */
@@ -414,6 +435,6 @@ static int flash_mcux_flexspi_qspi_init(struct device *dev)
 }
 
 DEVICE_AND_API_INIT(flash_mcux, "FLASH_0",
-		    flash_mcux_flexspi_qspi_init, &flash_data, NULL, POST_KERNEL,
-		    CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &flash_mcux_flexspi_qspi_api);
+			flash_mcux_flexspi_qspi_init, &flash_data, NULL, POST_KERNEL,
+			CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &flash_mcux_flexspi_qspi_api);
 
